@@ -1,0 +1,227 @@
+#!/usr/bin/pulseaudio -nF
+# ============================================
+# PulseAudio 配置 - USB Audio Offload
+# ============================================
+# 自动检测和配置 USB Audio Offload 设备
+#
+# 位置: /etc/pulse/default.pa.d/usb-offload-sink.pa
+#
+# 使用方法:
+#   1. 将此文件复制到 /etc/pulse/default.pa.d/
+#   2. 重启 PulseAudio: pulseaudio -k && pulseaudio --start
+#   3. 检查设备: pactl list sinks
+
+.nofail
+
+# ============================================
+# 加载 USB 音频模块
+# ============================================
+# 自动检测 USB 音频设备
+.ifexists module-udev-detect.so
+load-module module-udev-detect
+.endif
+
+# ============================================
+# USB Offload Sink 配置
+# ============================================
+# 为 USB offload 设备创建专用 sink
+
+# 检测 ALSA USB offload 设备
+.ifexists module-alsa-sink.so
+
+# USB Offload 播放设备
+# 设备名称需要根据实际情况调整
+load-module module-alsa-sink \
+    device=hw:0,0 \
+    sink_name=usb_offload_sink \
+    sink_properties="device.description='USB Audio Offload' \
+                     device.class=sound \
+                     device.bus=usb \
+                     device.form_factor=external \
+                     device.offload=true" \
+    rate=48000 \
+    channels=2 \
+    format=s16le \
+    tsched=yes \
+    tsched_buffer_size=65536 \
+    fragments=4 \
+    fragment_size=16384
+
+# USB Offload 录制设备
+load-module module-alsa-source \
+    device=hw:0,0 \
+    source_name=usb_offload_source \
+    source_properties="device.description='USB Audio Offload Mic' \
+                       device.class=sound \
+                       device.bus=usb \
+                       device.form_factor=external \
+                       device.offload=true" \
+    rate=48000 \
+    channels=2 \
+    format=s16le
+
+.endif
+
+# ============================================
+# 自动切换到 USB Offload 设备
+# ============================================
+# 当 USB offload 设备可用时，自动切换
+
+.ifexists module-switch-on-connect.so
+load-module module-switch-on-connect
+.endif
+
+# ============================================
+# 音频路由规则
+# ============================================
+# 优先使用 USB offload 设备
+
+.ifexists module-device-manager.so
+load-module module-device-manager \
+    do_routing=1
+.endif
+
+# ============================================
+# 低延迟配置
+# ============================================
+# 为 USB offload 优化延迟
+
+# 设置默认采样率
+default-sample-rate = 48000
+alternate-sample-rate = 44100
+
+# 设置默认片段大小（降低延迟）
+default-fragments = 4
+default-fragment-size-msec = 10
+
+# ============================================
+# 音频重采样配置
+# ============================================
+# 使用高质量重采样器
+
+resample-method = speex-float-5
+
+# 避免不必要的重采样
+avoid-resampling = yes
+
+# ============================================
+# 音量控制
+# ============================================
+# 启用平滑音量调节
+
+.ifexists module-flat-volumes.so
+# 禁用 flat volumes 以获得更好的音量控制
+# flat-volumes = no
+.endif
+
+# ============================================
+# 会话管理
+# ============================================
+# 保存和恢复音频设备状态
+
+.ifexists module-stream-restore.so
+load-module module-stream-restore \
+    restore_device=true \
+    restore_volume=true \
+    restore_muted=true
+.endif
+
+.ifexists module-device-restore.so
+load-module module-device-restore
+.endif
+
+# ============================================
+# 音频策略
+# ============================================
+# 为不同应用设置音频策略
+
+# 游戏和实时应用使用低延迟
+.ifexists module-role-cork.so
+load-module module-role-cork \
+    trigger_role=game \
+    cork_role=music
+.endif
+
+# ============================================
+# 调试和监控
+# ============================================
+# 启用统计信息收集（可选）
+
+# .ifexists module-statistics.so
+# load-module module-statistics
+# .endif
+
+# ============================================
+# 蓝牙设备支持（可选）
+# ============================================
+# 如果需要同时支持蓝牙音频
+
+# .ifexists module-bluetooth-discover.so
+# load-module module-bluetooth-discover
+# .endif
+
+# ============================================
+# 网络音频（可选）
+# ============================================
+# 通过网络共享 USB offload 音频
+
+# .ifexists module-native-protocol-tcp.so
+# load-module module-native-protocol-tcp \
+#     auth-anonymous=1
+# .endif
+
+# ============================================
+# 使用说明
+# ============================================
+# 
+# 1. 查看可用设备:
+#    pactl list sinks short
+#    pactl list sources short
+#
+# 2. 设置默认设备:
+#    pactl set-default-sink usb_offload_sink
+#    pactl set-default-source usb_offload_source
+#
+# 3. 测试播放:
+#    paplay -d usb_offload_sink test.wav
+#
+# 4. 调整音量:
+#    pactl set-sink-volume usb_offload_sink 80%
+#
+# 5. 静音/取消静音:
+#    pactl set-sink-mute usb_offload_sink toggle
+#
+# 6. 查看设备信息:
+#    pactl info
+#    pactl list sinks
+#
+# 7. 监控音频流:
+#    pactl subscribe
+#
+# 8. 调试模式:
+#    pulseaudio -vvv
+#
+# ============================================
+# 故障排查
+# ============================================
+#
+# 问题: 设备未检测到
+# 解决: 检查 ALSA 设备是否存在
+#       aplay -l
+#       cat /proc/asound/cards
+#
+# 问题: 音频断续
+# 解决: 增加缓冲区大小
+#       tsched_buffer_size=131072
+#       fragment_size=32768
+#
+# 问题: 延迟过高
+# 解决: 减小片段大小
+#       default-fragment-size-msec = 5
+#       fragments=2
+#
+# 问题: CPU 使用率高
+# 解决: 检查是否启用了 offload
+#       cat /sys/kernel/debug/usb/offload/status
+#
+# ============================================

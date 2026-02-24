@@ -1,0 +1,92 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * QCS6490 Radxa Q6A - USB Audio Offload DTS Overlay
+ * 
+ * 此文件为 Radxa Q6A 开发板启用 USB Audio Offload 功能
+ * 需要配合支持 USB offload 的内核 (6.8+) 使用
+ *
+ * 关键组件：
+ * - ADSP remoteproc: 加载 DSP 固件，处理音频数据
+ * - GPR/APR: 与 ADSP 通信的协议层
+ * - Q6AFE USB: USB 音频前端，连接 USB 和 DSP
+ * - XHCI Sideband: USB 控制器 sideband 接口，允许 DSP 直接访问 USB
+ * - IOMMU: ADSP 访问 USB 内存的地址映射
+ */
+
+/ {
+    reserved-memory {
+        #address-cells = <2>;
+        #size-cells = <2>;
+        ranges;
+        
+        adsp_audio_mem: adsp-audio-region@85700000 {
+            compatible = "shared-dma-pool";
+            reg = <0x0 0x85700000 0x0 0x2800000>;
+            no-map;
+        };
+    };
+};
+
+&remoteproc_adsp {
+    status = "okay";
+    firmware-name = "qcom/qcs6490/adsp.mbn";
+    memory-region = <&adsp_audio_mem>;
+    qcom,smem-states = <&adsp_smp2p_out 0>;
+    qcom,smem-state-names = "stop";
+};
+
+&glink_adsp {
+    status = "okay";
+    
+    apr {
+        compatible = "qcom,apr-v2";
+        qcom,domain = <4>;
+        #address-cells = <1>;
+        #size-cells = <0>;
+        
+        gpr {
+            compatible = "qcom,gpr";
+            qcom,domain = <1>;
+            #address-cells = <1>;
+            #size-cells = <0>;
+            
+            apm_svc: service@1 {
+                compatible = "qcom,apm";
+                reg = <1>;
+                #address-cells = <1>;
+                #size-cells = <0>;
+                
+                q6afe: afe@2 {
+                    compatible = "qcom,q6afe";
+                    reg = <2>;
+                    #address-cells = <1>;
+                    #size-cells = <0>;
+                    
+                    q6usb: usb@88 {
+                        compatible = "qcom,q6usb";
+                        reg = <136>;
+                        qcom,usb-audio-intr-idx = <2>;
+                    };
+                };
+            };
+        };
+    };
+};
+
+&usb_1 {
+    status = "okay";
+    
+    dwc3@a600000 {
+        usb-xhci-sideband;
+        sideband-interrupts = <2>;
+        iommus = <&apps_smmu 0x180f 0x0>;
+    };
+};
+
+&apps_smmu {
+    usb_audio_cb: usb-audio-cb@180f {
+        compatible = "qcom,smmu-cb";
+        iommus = <&apps_smmu 0x180f 0x0>;
+        qcom,iommu-dma = "bypass";
+    };
+};
