@@ -1,117 +1,93 @@
 # AudioReach USB Offload 研究文档
 
-本目录包含 AudioReach USB Offload 技术的深度研究文档。
+> ⚠️ 本目录文档已于 2026-02-24 基于上游源码逐行分析完全重写。
+> 初版文档存在 AFE 路径假设错误和 resampler 固件限制遗漏，详见 GitHub issue #66。
 
 ## 文档列表
 
-### 04-mfc-module.md - MFC 模块详解
-**行数**: 832 行  
-**大小**: 22KB
+### 01-audioreach-architecture.md - AudioReach 架构与 USB Offload 路径
+- AudioReach Graph → Subgraph → Container → Module 层次结构
+- 传统 AFE 数据路径 vs USB offload QMI+Sideband 路径的本质区别
+- 上游源码中 USB offload 的真实模块关系
+- 已知的架构限制
 
-**内容概要**:
-- MFC (Media Format Converter) 模块完整技术规格
-- 核心参数详解 (PARAM_ID_MFC_OUTPUT_MEDIA_FORMAT, PARAM_ID_MFC_RESAMPLER_CFG)
-- IIR vs FIR 重采样算法对比
-- MFC vs Dynamic Resampler 详细对比表
-- 多种使用场景和代码示例
-- AudioReach Graph 配置示例
-- 性能特征和最佳实践
-- 调试和故障排查方法
+### 02-usb-audio-offload.md - USB Audio Offload 技术概述
+- USB Audio Offload 架构组件和工作流程
+- 关键数据结构和初始化流程
+- 音频流启动/停止的完整流程
+- 性能优化和错误处理
 
-**关键技术点**:
-- MODULE_ID: 0x07001015
-- 支持采样率转换 (8kHz - 384kHz)
-- 支持位深转换 (16/24/32-bit)
-- 支持通道混音 (1-8 通道)
-- IIR 模式: 低延迟 (3-5ms)，适合语音
-- FIR 模式: 高音质 (15-20ms)，适合音乐
+### 03-qmi-handling.md - QMI 处理机制
+- QMI 架构和服务初始化
+- Stream Request、Stream Indication、Memory Map Request 消息类型
+- 错误处理、超时重试机制、同步机制
+- 调试支持和最佳实践
 
----
+### 04-sideband-interface.md - Sideband 接口技术
+- 完整的 Sideband API 参考（注册、端点管理、传输环、中断、门铃）
+- 详细的工作流程（初始化、启动、停止、清理）
+- 数据结构、内存管理、同步机制
+- 性能优化、调试支持、安全考虑
 
-### 05-radxa-q6a-implementation.md - Radxa Q6A 实现方案
-**行数**: 847 行  
-**大小**: 22KB
+### 05-implementation-guide.md - 实现指南
+- 真实的内核 CONFIG 选项和依赖关系
+- 驱动加载顺序：xhci-sideband → snd-usb-audio → q6usb → qc-usb-audio-offload
+- 设备树配置（基于真实 compatible strings）
+- 上游限制与变通方案
 
-**内容概要**:
-- Radxa Q6A 硬件架构详解 (QCS6490 SoC)
-- 完整的系统架构图
-- Linux 内核配置步骤 (6.8+)
-- 详细的设备树配置 (DTS)
-- AudioReach 拓扑配置和编译
-- ALSA UCM、PulseAudio、PipeWire 配置
-- 端到端测试流程
-- 性能验证方法 (CPU、延迟、功耗)
-- 完整的 Shell 脚本示例
+### 06-mfc-module.md - DSP 模块与固件限制分析
+- AudioReach USB 相关 DSP 模块
+- MFC (Media Format Converter) 的真实作用
+- `libdynamic_resampler.a` ARM32 限制问题深度分析
+- `audioreach-engine` 仓库固件文件结构
+- 对 QCS6490 (AArch64) 平台的影响
+- 可能的替代方案探讨
 
-**关键配置**:
-- 必需内核选项: CONFIG_SND_SOC_QDSP6_Q6USB, CONFIG_USB_XHCI_SIDEBAND
-- ADSP 固件路径: /lib/firmware/qcom/qcs6490/adsp/
-- 性能提升: CPU 使用率降低 80%，功耗降低 30-50%
+### 07-radxa-q6a-implementation.md - Radxa Q6A 平台实现与限制
+- QCS6490 真实硬件架构（DWC3 + XHCI）
+- ADSP 固件实际状态和限制
+- 真实可行的验证步骤
+- 当前不可行的方案明确列表
 
----
+### 08-troubleshooting.md - 故障排查指南
+- 基于源码中 `dev_err`/`dev_dbg` 提取的真实日志关键字
+- XHCI sideband 调试方法
+- QMI 服务连接调试
+- IOMMU 映射失败排查
+- USB 设备枚举和 offload probe 排查
 
-### 06-troubleshooting.md - 故障排查指南
-**行数**: 869 行  
-**大小**: 18KB
+## 核心技术要点
 
-**内容概要**:
-- 问题分类体系 (内核/固件/USB/拓扑/用户空间)
-- 10+ 个常见问题的详细排查步骤
-- 每个问题包含: 症状、原因分析、解决方案、验证命令
-- 完整的调试工具和命令集合
-- 日志分析方法和关键字
-- 性能调优技巧
-- 快速诊断脚本
+本项目研究的 USB Audio Offload 真实数据路径：
 
-**涵盖问题**:
-1. USB Offload 驱动未加载
-2. XHCI Sideband 初始化失败
-3. IOMMU 映射失败
-4. QMI 服务连接失败
-5. ADSP 固件加载失败
-6. USB AFE 模块不可用
-7. Graph 打开失败
-8. USB 设备未被 Offload 识别
-9. 采样率不支持
-10. 播放无声音
+```
+q6usb.c (ASoC component)
+    │
+    ├── 创建 auxiliary device "q6usb.qc-usb-audio-offload"
+    │
+    ▼
+qc_audio_offload.c (auxiliary driver)
+    │
+    ├── QMI: UAUDIO_STREAM_SERVICE
+    ├── XHCI: xhci_sideband API
+    └── IOMMU: uaudio_iommu_map()
+    │
+    ▼
+ADSP 直接操作 XHCI transfer ring
+```
 
-## 文档特点
+关键发现：USB offload **不走** 传统 AFE 数据路径。
 
-✅ **全中文**: 所有文档使用中文编写，便于中文用户阅读  
-✅ **技术准确**: 基于 Linux 内核源码和 Qualcomm 官方文档  
-✅ **内容详实**: 每篇文档 800+ 行，包含丰富的技术细节  
-✅ **代码示例**: 包含大量 C 代码、Shell 脚本、设备树配置  
-✅ **实用性强**: 提供可直接使用的配置和脚本  
-✅ **架构图表**: 包含系统架构图和对比表格  
-✅ **UTF-8 编码**: 正确的中文编码，无乱码问题
+## 上游源码参考
 
-## 使用建议
-
-1. **初学者**: 按顺序阅读，从 MFC 模块开始了解基础概念
-2. **开发者**: 重点阅读 Radxa Q6A 实现方案，获取配置细节
-3. **调试人员**: 直接查阅故障排查指南，快速定位问题
-4. **系统集成**: 参考所有文档，完整实现 USB Offload 功能
-
-## 技术栈
-
-- **硬件平台**: Qualcomm QCS6490 (Radxa Q6A)
-- **操作系统**: Linux 6.8+
-- **音频框架**: AudioReach
-- **通信协议**: GLINK, QMI, GPR
-- **音频接口**: ALSA, PulseAudio, PipeWire
-
-## 相关资源
-
-- Linux 内核源码: `sound/soc/qcom/qdsp6/`
-- 设备树文档: `Documentation/devicetree/bindings/sound/qcom,*`
-- ALSA 文档: `Documentation/sound/`
+- `sound/usb/qcom/qc_audio_offload.c` - QMI + sideband 桥接
+- `sound/soc/qcom/qdsp6/q6usb.c` - ASoC USB component
+- `drivers/usb/host/xhci-sideband.c` - XHCI sideband API
+- `sound/soc/qcom/qdsp6/q6afe-dai.c` - AFE DAI（含 USB_RX port 定义）
+- `sound/soc/qcom/qdsp6/q6afe.c` - AFE 底层实现
 
 ## 文档版本
 
-- 创建日期: 2026-02-24
-- 基于内核版本: Linux 6.8+
-- AudioReach 版本: 最新稳定版
-
----
-
-**注意**: 这些文档基于公开的技术资料和开源代码编写，用于技术研究和学习目的。
+- 重写日期：2026-02-24
+- 基于内核版本：Linux 6.8+（上游 mainline）
+- 重写原因：GitHub issue #66（AFE 路径被封 + resampler 固件限制）

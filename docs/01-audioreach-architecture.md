@@ -4,6 +4,8 @@
 
 AudioReach 是 Qualcomm 开源的音频处理框架，运行在 ADSP (Audio DSP) 或 CDSP (Compute DSP) 上。它取代了传统的 QDSP6 架构（q6asm/q6adm/q6afe），提供了更灵活、模块化的音频处理能力。AudioReach 通过动态构建音频处理图（Graph）来实现各种音频场景，支持低延迟、低功耗的音频处理。
 
+**重要提示：** 本文档基于 Linux 内核上游源码（6.8+）分析。USB Audio Offload 的真实实现路径与传统 AFE 数据路径不同，详见"上游源码限制"章节。
+
 ## 核心概念层次结构
 
 AudioReach 采用四层架构，从上到下依次为：Graph → Subgraph → Container → Module。
@@ -726,6 +728,199 @@ cat /sys/kernel/debug/audioreach/graphs
 cat /sys/kernel/debug/audioreach/modules
 ```
 
+## 上游源码限制
+
+### USB Audio Offload 的真实路径
+
+通过分析上游内核源码（Linux 6.8+），USB Audio Offload 的真实实现与传统 AFE 数据路径存在本质区别：
+
+#### 1. AFE 路径的实际状态
+
+**q6afe-dai.c 中的 USB_RX 配置：**
+```c
+// sound/soc/qcom/qdsp6/q6afe-dai.c
+case USB_RX:
+    q6afe_usb_port_prepare(dai_data->port[dai->id],
+                          &dai_data->port_config[dai->id].usb_audio);
+    break;
+
+static const struct snd_soc_dai_ops q6afe_usb_ops = {
+    .prepare = q6afe_dai_prepare,
+    .hw_params = q6afe_usb_hw_params,
+    .shutdown = q6afe_dai_shutdown,
+};
+```
+
+这些代码确实存在，但它们是 AFE 层面的**控制路径配置**，而非数据传输路径。
+
+#### 2. 真实的 USB Offload 数据路径
+
+**q6usb.c 的真实架构：**
+```c
+// sound/soc/qcom/qdsp6/q6usb.c
+static int q6usb_component_probe(struct snd_soc_component *component)
+{
+    struct q6usb_port_data *data = dev_get_drvdata(component->dev);
+
+    // 创建 auxiliary device "qc-usb-audio-offload"
+    ret = q6usb_dai_add_aux_device(data, &data->uauxdev);
+
+    // 注册到 snd_soc_usb 框架
+    usb = snd_soc_usb_allocate_port(component, &data->priv);
+    usb->connection_status_cb = q6usb_alsa_connection_cb;
+    usb->update_offload_route_info = q6usb_update_offload_route;
+    snd_soc_usb_add_port(usb);
+
+    return 0;
+}
+```
+
+**关键发现：**
+- q6usb.c 注册为 ASoC component，创建 auxiliary device
+- 该 auxiliary device 被 qc_audio_offload.c 作为 auxiliary_driver 绑定
+- 数据传输通过 **QMI + XHCI Sideband** 路径，不经过传统 AFE 数据通道
+
+#### 3. QMI + XHCI Sideband 机制
+
+**qc_audio_offload.c 的核心流程：**
+```c
+// sound/usb/qcom/qc_audio_offload.c
+
+// QMI 服务处理 ADSP 的 stream enable 请求
+static void handle_uaudio_stream_req(struct qmi_handle *handle,
+                                     struct sockaddr_qrtr *sq,
+                                     struct qmi_txn *txn,
+                                     const void *decoded_msg)
+{
+    // 1. 解析 QMI 请求
+    req_msg = (struct qmi_uaudio_stream_req_msg_v01 *)decoded_msg;
+
+    // 2. 启用 USB 音频流
+    ret = enable_audio_stream(subs, pcm_format, channels, cur_rate, datainterval);
+
+    // 3. 准备 QMI 响应（包含 XHCI 资源地址）
+    ret = prepare_qmi_response(subs, req_msg, &resp, info_idx);
+
+    // 4. 发送响应给 ADSP
+    qmi_send_response(svc->uaudio_svc_hdl, sq, txn, ...);
+}
+
+// 准备 QMI 响应：获取 XHCI transfer ring 和 event ring 地址
+static int prepare_qmi_response(...)
+{
+    // 设置 data endpoint
+    ret = uaudio_endpoint_setup(subs, subs->data_endpoint, card_num,
+                                &resp->xhci_mem_info.tr_data,
+                                &resp->std_as_data_ep_desc);
+
+    // 设置 sync endpoint（如果存在）
+    if (subs->sync_endpoint) {
+        ret = uaudio_endpoint_setup(subs, subs->sync_endpoint, card_num,
+                                    &resp->xhci_mem_info.tr_sync,
+                                    &resp->std_as_sync_ep_desc);
+    }
+
+    // 创建 secondary interrupter 并获取 event ring
+    ret = uaudio_event_ring_setup(subs, card_num,
+                                  &resp->xhci_mem_info.evt_ring);
+
+    // 分配并映射 transfer buffer
+    ret = uaudio_transfer_buffer_setup(subs, &xfer_buf_cpu,
+                                       req_msg->xfer_buff_size,
+                                       &resp->xhci_mem_info.xfer_buff);
+
+    return 0;
+}
+```
+
+**XHCI Sideband API（Intel 贡献）：**
+```c
+// drivers/usb/host/xhci-sideband.c
+
+// 注册 sideband 访问
+struct xhci_sideband *xhci_sideband_register(struct usb_interface *intf, ...);
+
+// 添加 endpoint 到 sideband
+int xhci_sideband_add_endpoint(struct xhci_sideband *sb,
+                               struct usb_host_endpoint *host_ep);
+
+// 获取 transfer ring 物理地址
+struct sg_table *xhci_sideband_get_endpoint_buffer(struct xhci_sideband *sb,
+                                                   struct usb_host_endpoint *host_ep);
+
+// 创建 secondary interrupter
+int xhci_sideband_create_interrupter(struct xhci_sideband *sb, int num_seg,
+                                     bool ip_autoclear, u32 imod_interval, int intr_num);
+
+// 获取 event ring 地址
+struct sg_table *xhci_sideband_get_event_buffer(struct xhci_sideband *sb);
+```
+
+#### 4. IOMMU 地址空间布局
+
+**qc_audio_offload.c 中的 IOVA 定义：**
+```c
+#define PREPEND_SID_TO_IOVA(iova, sid) ((u64)(((u64)(iova)) | (((u64)sid) << 32)))
+#define IOVA_MASK(iova) (((u64)(iova)) & 0xFFFFFFFF)
+#define IOVA_BASE 0x1000
+#define IOVA_XFER_RING_BASE (IOVA_BASE + PAGE_SIZE * (SNDRV_CARDS + 1))
+#define IOVA_XFER_BUF_BASE (IOVA_XFER_RING_BASE + PAGE_SIZE * SNDRV_CARDS * 32)
+#define IOVA_XFER_RING_MAX (IOVA_XFER_BUF_BASE - PAGE_SIZE)
+#define IOVA_XFER_BUF_MAX (0xfffff000 - PAGE_SIZE)
+```
+
+**地址空间布局：**
+```
+0x0000_1000: Event Ring Base (IOVA_BASE)
+0x0000_2000 - 0x0021_0000: Transfer Ring Region (per card/endpoint)
+0x0021_0000 - 0xFFFF_F000: Transfer Buffer Region (up to 24 pages per stream)
+```
+
+ADSP 通过 IOMMU 映射的 IOVA 地址直接访问 XHCI 的 transfer ring、event ring 和 transfer buffer。
+
+#### 5. 真实数据流路径
+
+```
+用户空间 (ALSA)
+    ↓
+q6usb.c (ASoC component)
+    ↓ (创建 auxiliary device)
+qc_audio_offload.c (auxiliary driver)
+    ↓ (QMI 通信)
+ADSP (AudioReach)
+    ↓ (直接 DMA 访问 XHCI 资源)
+XHCI Transfer Ring → USB 设备
+```
+
+**关键点：**
+- 音频数据不经过 GPR/GLINK 传输
+- ADSP 直接操作 XHCI 的 transfer ring 写入 TRB (Transfer Request Block)
+- XHCI 硬件完成 USB isochronous 传输
+- 完成事件写入 secondary event ring，ADSP 通过中断处理
+
+### Dynamic Resampler 固件限制
+
+**audioreach-engine 仓库的限制：**
+
+在 Qualcomm 的 audioreach-engine 开源仓库中，`libdynamic_resampler.a` 预编译库只提供了 ARM32 版本：
+
+```
+audioreach-engine/
+└── spf/
+    └── libs/
+        └── libdynamic_resampler.a  (ARM32 only)
+```
+
+**影响：**
+- 在 AArch64 平台（如 QCS6490）上无法链接此库
+- DSP 端的 dynamic resampler 模块无法在 64 位平台上工作
+- 如果 USB 设备采样率与系统不匹配，需要在 AP 侧进行重采样
+
+**解决方案：**
+1. 使用固定采样率（48kHz）避免重采样需求
+2. 在 AP 侧使用 ALSA rate plugin 进行重采样
+3. 等待 Qualcomm 提供 AArch64 版本的 libdynamic_resampler.a
+
 ## 总结
 
 AudioReach 是 Qualcomm 新一代音频处理框架，相比传统 QDSP6 架构提供了更高的灵活性和可扩展性。其核心优势包括：
@@ -736,4 +931,9 @@ AudioReach 是 Qualcomm 新一代音频处理框架，相比传统 QDSP6 架构�
 4. **低延迟**：可配置的 Container 优先级和帧大小
 5. **开源友好**：内核驱动部分开源，便于社区贡献
 
-AudioReach 已经在 Qualcomm 最新的 SoC（如 SM8450, SM8550）上广泛应用，是未来 Android 音频架构的重要组成部分。
+**USB Audio Offload 特别说明：**
+- 上游实现采用 QMI + XHCI Sideband 路径，不走传统 AFE 数据通道
+- AFE USB_RX 配置仅用于控制路径，数据传输由 ADSP 直接操作 XHCI 完成
+- 需要注意 libdynamic_resampler.a 的 AArch64 兼容性问题
+
+AudioReach 已经在 Qualcomm 最新的 SoC（如 SM8450, SM8550, QCS6490）上广泛应用，是未来 Android 音频架构的重要组成部分。

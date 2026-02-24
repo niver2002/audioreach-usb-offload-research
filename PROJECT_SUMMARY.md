@@ -1,175 +1,97 @@
-# 项目文件创建总结
+# 项目重写说明
 
-## 已创建的文件
+## 重写原因
 
-### 1. 内核配置文件
-**文件**: `/c/Users/Administrator/audioreach-usb-offload-research/kernel/config/usb_audio_offload.config`
-- **行数**: 205 行
-- **内容**: 完整的内核配置选项，包含：
-  - Qualcomm 平台基础配置
-  - AudioReach 框架支持
-  - USB Audio Offload 核心驱动
-  - IOMMU 和通信层配置
-  - 调试和性能优化选项
-- **用途**: 使用 `merge_config.sh` 合并到内核配置中
+本项目初版（2026-02-24）在未深入分析上游源码的情况下仓促发布，导致文档存在两个致命技术错误：
 
-### 2. 设备树文件
-**文件**: `/c/Users/Administrator/audioreach-usb-offload-research/kernel/dts/qcs6490-radxa-q6a-usb-audio.dtsi`
-- **行数**: 92 行
-- **内容**: QCS6490 Radxa Q6A 的 USB Audio Offload 设备树配置
-  - ADSP remoteproc 配置
-  - GLINK/GPR 通信通道
-  - Q6AFE USB 端口定义
-  - USB 控制器 sideband 配置
-  - IOMMU 映射设置
-- **用途**: 包含到主 DTS 或编译为 DTBO overlay
+1. **AFE 路径假设错误**：初版假设 USB Audio Offload 走传统的 AFE (Audio Front End) 数据路径。
+   实际上，上游源码中 USB offload 走的是 **QMI + XHCI Sideband** 路径，
+   由 `qc_audio_offload.c` 驱动实现，ADSP 通过 QMI 请求获取 XHCI transfer ring 地址后
+   直接操作 USB 硬件，完全绕过 AFE 数据通路。
 
-### 3. 测试脚本
-**文件**: `/c/Users/Administrator/audioreach-usb-offload-research/scripts/test-usb-offload.sh`
-- **行数**: 167 行
-- **权限**: 可执行 (chmod +x)
-- **功能**:
-  - 检查内核配置
-  - 验证 ADSP 固件状态
-  - 检测 USB 音频设备
-  - 检查 ALSA 设备
-  - 播放测试
-  - 彩色输出和日志记录
-- **用法**: `sudo ./test-usb-offload.sh [--check|--play|--all]`
+2. **Dynamic Resampler 固件限制**：`audioreach-engine` 仓库中的 `libdynamic_resampler.a`
+   只有 ARM32 预编译版本，在 QCS6490 (AArch64) 平台上无法链接使用。
+   初版文档完全忽略了这一限制。
 
-### 4. 环境搭建脚本
-**文件**: `/c/Users/Administrator/audioreach-usb-offload-research/scripts/setup-environment.sh`
-- **行数**: 175 行
-- **权限**: 可执行 (chmod +x)
-- **功能**:
-  - 检查和安装依赖包
-  - 创建固件目录
-  - 设置 ALSA UCM 配置
-  - 编译设备树
-  - 显示后续步骤指南
-- **用途**: 一键配置开发环境
+这些问题由 GitHub issue #66 指出。
 
-### 5. ALSA UCM 配置
-**文件**: `/c/Users/Administrator/audioreach-usb-offload-research/examples/alsa-configs/usb-offload.conf`
-- **行数**: 130 行
-- **内容**: Use Case Manager 配置
-  - HiFi 用例定义
-  - USB 扬声器设备配置
-  - USB 麦克风设备配置
-  - 低延迟和高质量模式修饰符
-  - 详细的中文注释
-- **安装位置**: `/usr/share/alsa/ucm2/qcom/qcs6490/usb-offload.conf`
+## 重写范围
 
-### 6. PulseAudio 配置
-**文件**: `/c/Users/Administrator/audioreach-usb-offload-research/examples/pulseaudio-configs/usb-offload-sink.pa`
-- **行数**: 227 行
-- **内容**: PulseAudio 自动配置脚本
-  - USB offload sink/source 定义
-  - 自动设备切换
-  - 低延迟优化
-  - 音频路由规则
-  - 完整的使用说明和故障排查指南
-- **安装位置**: `/etc/pulse/default.pa.d/usb-offload-sink.pa`
+本次重写基于以下上游源码的逐行分析：
 
-### 7. README 文档
-**文件**: `/c/Users/Administrator/audioreach-usb-offload-research/README.md`
-- **内容**: 完整的项目文档
-  - 项目结构说明
-  - 快速开始指南
-  - 技术架构说明
-  - 调试方法
-  - 常见问题解答
+| 源码文件 | 来源 | 作用 |
+|---------|------|------|
+| `qc_audio_offload.c` | Linux 内核 `sound/usb/` | QMI + XHCI sideband 桥接驱动 |
+| `q6usb.c` | Linux 内核 `sound/soc/qcom/qdsp6/` | ASoC component，创建 auxiliary device |
+| `xhci-sideband.c` | Linux 内核 `drivers/usb/host/` | XHCI sideband API (Intel 贡献) |
+| `q6afe-dai.c` | Linux 内核 `sound/soc/qcom/qdsp6/` | AFE DAI 定义（含 USB_RX port） |
+| `q6afe.c` | Linux 内核 `sound/soc/qcom/qdsp6/` | AFE 底层实现 |
+| `snd_usb_audio.h` | Linux 内核 `sound/usb/` | snd_usb_platform_ops 接口 |
+| `audioreach-engine/` | GitHub AudIoReach | DSP 固件和预编译库 |
 
-## 文件统计
+## 真实架构总结
 
-| 文件类型 | 文件数 | 总行数 |
-|---------|--------|--------|
-| 设备树 (.dtsi) | 1 | 92 |
-| 内核配置 (.config) | 1 | 205 |
-| Shell 脚本 (.sh) | 2 | 342 |
-| ALSA 配置 (.conf) | 1 | 130 |
-| PulseAudio 配置 (.pa) | 1 | 227 |
-| **总计** | **6** | **996** |
-
-## 特点
-
-### 1. 完整的中文注释
-所有文件都包含详细的中文注释，解释每个配置项的作用和原理。
-
-### 2. 可直接使用
-- 脚本文件已设置可执行权限
-- 配置文件格式正确，可直接部署
-- 包含完整的错误处理
-
-### 3. 详细的文档
-- 每个文件都有使用说明
-- 包含故障排查指南
-- 提供示例命令
-
-### 4. 模块化设计
-- 内核配置独立
-- 设备树可单独编译
-- 脚本功能分离
-
-## 使用流程
-
-1. **环境搭建**
-   ```bash
-   cd scripts
-   sudo ./setup-environment.sh
-   ```
-
-2. **配置内核**
-   ```bash
-   ./scripts/kconfig/merge_config.sh \
-       arch/arm64/configs/qcs6490_defconfig \
-       kernel/config/usb_audio_offload.config
-   ```
-
-3. **编译和安装**
-   ```bash
-   make -j$(nproc)
-   make modules_install
-   make install
-   ```
-
-4. **部署配置**
-   ```bash
-   # ALSA UCM
-   cp examples/alsa-configs/usb-offload.conf \
-      /usr/share/alsa/ucm2/qcom/qcs6490/
-   
-   # PulseAudio
-   cp examples/pulseaudio-configs/usb-offload-sink.pa \
-      /etc/pulse/default.pa.d/
-   ```
-
-5. **测试**
-   ```bash
-   cd scripts
-   sudo ./test-usb-offload.sh --all
-   ```
-
-## 技术要点
-
-### USB Audio Offload 架构
-- **ADSP**: 专用音频 DSP，运行 AudioReach 固件
-- **Q6AFE USB**: USB 音频前端驱动
-- **XHCI Sideband**: 允许 DSP 直接访问 USB 端点
-- **QMI**: 控制消息通信
-- **IOMMU**: 安全的内存访问
-
-### 优势
-- 降低 CPU 负载 30-50%
-- 减少音频延迟
-- 提高功耗效率
-- 支持高质量音频 (192kHz/32bit)
-
-## 文件位置
-
-所有文件已创建在:
 ```
-/c/Users/Administrator/audioreach-usb-offload-research/
+USB 设备插入
+    │
+    ▼
+qc_usb_audio_offload_probe()
+    │
+    ├── xhci_sideband_register()     ← 注册 XHCI sideband
+    ├── snd_soc_usb_connect()        ← 通知 ASoC 层
+    │
+    ▼
+ADSP 发送 QMI 请求 (UAUDIO_STREAM_REQ)
+    │
+    ▼
+handle_uaudio_stream_req()
+    │
+    ├── enable_audio_stream()
+    │   ├── xhci_sideband_add_endpoint()
+    │   ├── xhci_sideband_get_endpoint_buffer()  ← transfer ring
+    │   ├── xhci_sideband_create_interrupter()
+    │   ├── xhci_sideband_get_event_buffer()     ← event ring
+    │   └── uaudio_iommu_map()                   ← IOVA 映射
+    │
+    ▼
+prepare_qmi_response()
+    │
+    ├── xhci_mem_info.tr_data      ← transfer ring IOVA
+    ├── xhci_mem_info.tr_sync      ← sync transfer ring IOVA
+    ├── xhci_mem_info.evt_ring     ← event ring IOVA
+    ├── xhci_mem_info.xfer_buff    ← transfer buffer IOVA
+    ├── interrupter_num            ← secondary interrupter 编号
+    └── speed_info, slot_id        ← USB 设备信息
+    │
+    ▼
+ADSP 直接操作 XHCI transfer ring 进行 isochronous 传输
 ```
 
-可以直接使用或根据实际需求修改。
+## 已知限制
+
+1. AFE 方向的 USB offload 在上游内核中不可用
+2. `libdynamic_resampler.a` 无 AArch64 版本
+3. ADSP 端 USB 处理模块为闭源固件
+4. XHCI sideband 需要 XHCI 控制器硬件支持
+
+## 文件清单
+
+| 文件 | 说明 |
+|------|------|
+| `docs/01-audioreach-architecture.md` | AudioReach 架构与 USB offload 路径分析 |
+| `docs/02-usb-audio-offload.md` | USB Audio Offload 技术概述 |
+| `docs/03-qmi-handling.md` | QMI 处理机制 |
+| `docs/04-sideband-interface.md` | Sideband 接口技术 |
+| `docs/05-implementation-guide.md` | 基于真实驱动的实现指南 |
+| `docs/06-mfc-module.md` | DSP 模块与固件限制分析 |
+| `docs/07-radxa-q6a-implementation.md` | Radxa Q6A 平台实现与限制 |
+| `docs/08-troubleshooting.md` | 基于真实驱动日志的故障排查 |
+| `topology/` | DAPM routing 和拓扑说明 |
+| `kernel/` | 内核配置和设备树 |
+| `scripts/` | 测试和环境搭建脚本 |
+| `examples/` | ALSA/PulseAudio 配置示例 |
+
+## 版本
+
+- 初版：2026-02-24（已废弃，存在致命技术错误）
+- 重写版：2026-02-24（基于上游源码逐行分析）

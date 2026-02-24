@@ -1,92 +1,404 @@
 // SPDX-License-Identifier: BSD-3-Clause
 /*
- * QCS6490 Radxa Q6A - USB Audio Offload DTS Overlay
- * 
- * 此文件为 Radxa Q6A 开发板启用 USB Audio Offload 功能
- * 需要配合支持 USB offload 的内核 (6.8+) 使用
+ * QCS6490 Radxa Q6A - USB Audio Offload 设备树配置
+ *
+ * 基于上游内核真实架构编写
+ * 适用于 Linux 6.8+ 内核
  *
  * 关键组件：
- * - ADSP remoteproc: 加载 DSP 固件，处理音频数据
- * - GPR/APR: 与 ADSP 通信的协议层
- * - Q6AFE USB: USB 音频前端，连接 USB 和 DSP
- * - XHCI Sideband: USB 控制器 sideband 接口，允许 DSP 直接访问 USB
- * - IOMMU: ADSP 访问 USB 内存的地址映射
+ * 1. ADSP remoteproc - 加载 DSP 固件
+ * 2. GLINK - ADSP 和 APPS 之间的通信通道
+ * 3. GPR - AudioReach 通信协议
+ * 4. q6usb - USB 音频前端，注册 ASoC component
+ * 5. USB XHCI 控制器 - 带 sideband 支持
+ * 6. IOMMU - ADSP 访问 USB 内存的地址映射
+ *
+ * 数据流：
+ * 用户空间 → q6usb (ASoC) → QMI 消息 → ADSP 固件 → XHCI Sideband → USB DMA
+ *
+ * 注意：
+ * - 不走传统的 AFE port 数据传输
+ * - 不使用 AudioReach graph 数据路径
+ * - 音频数据通过 XHCI sideband 直接 DMA
  */
 
 / {
-    reserved-memory {
-        #address-cells = <2>;
-        #size-cells = <2>;
-        ranges;
-        
-        adsp_audio_mem: adsp-audio-region@85700000 {
-            compatible = "shared-dma-pool";
-            reg = <0x0 0x85700000 0x0 0x2800000>;
-            no-map;
-        };
-    };
+	/*
+	 * 保留内存区域
+	 * ADSP 需要专用的内存区域用于固件和音频缓冲
+	 */
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/*
+		 * ADSP 音频内存区域
+		 * 地址和大小需要根据实际硬件调整
+		 * 参考：Qualcomm 官方设备树或板级 DTS
+		 */
+		adsp_mem: adsp-region@85700000 {
+			compatible = "shared-dma-pool";
+			reg = <0x0 0x85700000 0x0 0x2800000>;  /* 40MB */
+			no-map;
+		};
+
+		/*
+		 * USB 音频 DMA 缓冲区（可选）
+		 * 如果 ADSP 需要专用的 USB 音频缓冲区
+		 */
+		usb_audio_mem: usb-audio-region@87f00000 {
+			compatible = "shared-dma-pool";
+			reg = <0x0 0x87f00000 0x0 0x100000>;  /* 1MB */
+			no-map;
+		};
+	};
 };
 
+/*
+ * ADSP Remoteproc 配置
+ * 负责加载和管理 ADSP 固件
+ */
 &remoteproc_adsp {
-    status = "okay";
-    firmware-name = "qcom/qcs6490/adsp.mbn";
-    memory-region = <&adsp_audio_mem>;
-    qcom,smem-states = <&adsp_smp2p_out 0>;
-    qcom,smem-state-names = "stop";
+	status = "okay";
+
+	/* ADSP 固件文件名 */
+	firmware-name = "qcom/qcs6490/adsp.mbn";
+
+	/* 内存区域 */
+	memory-region = <&adsp_mem>;
+
+	/* SMP2P 状态控制 */
+	qcom,smem-states = <&adsp_smp2p_out 0>;
+	qcom,smem-state-names = "stop";
+
+	/* 电源域（如果需要） */
+	/* power-domains = <&rpmhpd QCS6490_CX>; */
 };
 
+/*
+ * GLINK ADSP 通信通道
+ * ADSP 和 APPS 之间的消息传递
+ */
 &glink_adsp {
-    status = "okay";
-    
-    apr {
-        compatible = "qcom,apr-v2";
-        qcom,domain = <4>;
-        #address-cells = <1>;
-        #size-cells = <0>;
-        
-        gpr {
-            compatible = "qcom,gpr";
-            qcom,domain = <1>;
-            #address-cells = <1>;
-            #size-cells = <0>;
-            
-            apm_svc: service@1 {
-                compatible = "qcom,apm";
-                reg = <1>;
-                #address-cells = <1>;
-                #size-cells = <0>;
-                
-                q6afe: afe@2 {
-                    compatible = "qcom,q6afe";
-                    reg = <2>;
-                    #address-cells = <1>;
-                    #size-cells = <0>;
-                    
-                    q6usb: usb@88 {
-                        compatible = "qcom,q6usb";
-                        reg = <136>;
-                        qcom,usb-audio-intr-idx = <2>;
-                    };
-                };
-            };
-        };
-    };
+	status = "okay";
+
+	/*
+	 * GPR (Generic Packet Router)
+	 * AudioReach 使用的通信协议
+	 */
+	gpr {
+		compatible = "qcom,gpr";
+		qcom,glink-channels = "adsp_apps";
+		qcom,intents = <512 20>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		/*
+		 * APM (Audio Processing Manager) 服务
+		 * 管理音频图和模块
+		 */
+		q6apm: service@1 {
+			compatible = "qcom,q6apm";
+			reg = <GPR_APM_MODULE_IID>;
+			#sound-dai-cells = <0>;
+			qcom,protection-domain = "avs/audio", "msm/adsp/audio_pd";
+
+			/*
+			 * APM DAI
+			 * 提供用户空间可见的 PCM 设备
+			 */
+			q6apm-dai {
+				compatible = "qcom,q6apm-dais";
+				#sound-dai-cells = <1>;
+			};
+
+			/*
+			 * APM Bedai
+			 * 后端 DAI 接口
+			 */
+			q6apm-bedai {
+				compatible = "qcom,q6apm-lpass-dais";
+				#sound-dai-cells = <1>;
+			};
+		};
+
+		/*
+		 * PRM (Proxy Resource Manager) 服务
+		 * 管理硬件资源（时钟、电源、带宽）
+		 */
+		q6prm: service@2 {
+			compatible = "qcom,q6prm";
+			reg = <GPR_PRM_MODULE_IID>;
+			qcom,protection-domain = "avs/audio", "msm/adsp/audio_pd";
+
+			/*
+			 * PRM 时钟控制
+			 */
+			q6prm-clocks {
+				compatible = "qcom,q6prm-clocks";
+				#clock-cells = <2>;
+			};
+		};
+
+		/*
+		 * AFE (Audio Front End) 服务
+		 * 硬件接口抽象层
+		 */
+		q6afe: service@3 {
+			compatible = "qcom,q6afe";
+			reg = <GPR_AFE_MODULE_IID>;
+			qcom,protection-domain = "avs/audio", "msm/adsp/audio_pd";
+
+			/*
+			 * AFE DAI
+			 * 提供硬件接口（I2S、TDM、USB 等）
+			 */
+			q6afe-dai {
+				compatible = "qcom,q6afe-dais";
+				#sound-dai-cells = <1>;
+			};
+
+			/*
+			 * AFE 时钟控制
+			 */
+			q6afe-clocks {
+				compatible = "qcom,q6afe-clocks";
+				#clock-cells = <2>;
+			};
+
+			/*
+			 * Q6USB - USB 音频前端（关键）
+			 * 注册 ASoC component，创建 auxiliary device
+			 * 源码: sound/soc/qcom/qdsp6/q6usb.c
+			 */
+			q6usb: usb@0 {
+				compatible = "qcom,q6usb";
+				#sound-dai-cells = <1>;
+
+				/*
+				 * USB 中断索引
+				 * 用于 XHCI sideband 中断路由
+				 */
+				qcom,usb-audio-intr-idx = <2>;
+
+				/*
+				 * IOMMU 映射（如果需要）
+				 * 允许 ADSP 访问 USB 内存
+				 */
+				iommus = <&apps_smmu 0x180f 0x0>;
+
+				/*
+				 * 内存区域（可选）
+				 */
+				/* memory-region = <&usb_audio_mem>; */
+			};
+		};
+	};
 };
 
+/*
+ * USB 控制器配置
+ * QCS6490 使用 DWC3 USB 控制器
+ */
 &usb_1 {
-    status = "okay";
-    
-    dwc3@a600000 {
-        usb-xhci-sideband;
-        sideband-interrupts = <2>;
-        iommus = <&apps_smmu 0x180f 0x0>;
-    };
+	status = "okay";
+
+	/*
+	 * DWC3 控制器节点
+	 * 需要启用 XHCI sideband 支持
+	 */
+	dwc3@a600000 {
+		compatible = "snps,dwc3";
+		reg = <0 0x0a600000 0 0xcd00>;
+		interrupts = <GIC_SPI 133 IRQ_TYPE_LEVEL_HIGH>;
+
+		/*
+		 * USB 角色
+		 * host: 仅主机模式（用于 USB 音频设备）
+		 * otg: 支持 OTG 切换
+		 */
+		dr_mode = "host";
+
+		/*
+		 * XHCI Sideband 支持（关键）
+		 * 允许 ADSP 通过 sideband 接口直接访问 USB transfer ring
+		 * 这是 USB offload 的核心机制
+		 */
+		usb-xhci-sideband;
+
+		/*
+		 * Sideband 中断数量
+		 * 必须与 q6usb 的 qcom,usb-audio-intr-idx 匹配
+		 */
+		sideband-interrupts = <2>;
+
+		/*
+		 * IOMMU 映射（关键）
+		 * Stream ID 0x180f 用于 USB 音频 offload
+		 * ADSP 通过此 stream ID 访问 USB 内存
+		 */
+		iommus = <&apps_smmu 0x180f 0x0>;
+
+		/*
+		 * 时钟和电源（根据实际硬件配置）
+		 */
+		clocks = <&gcc GCC_USB30_PRIM_MASTER_CLK>,
+			 <&gcc GCC_CFG_NOC_USB3_PRIM_AXI_CLK>,
+			 <&gcc GCC_AGGRE_USB3_PRIM_AXI_CLK>,
+			 <&gcc GCC_USB30_PRIM_MOCK_UTMI_CLK>,
+			 <&gcc GCC_USB30_PRIM_SLEEP_CLK>;
+		clock-names = "core", "iface", "bus_aggr", "utmi", "sleep";
+
+		/*
+		 * 电源域
+		 */
+		power-domains = <&gcc USB30_PRIM_GDSC>;
+
+		/*
+		 * PHY 配置
+		 */
+		phys = <&usb_1_hsphy>, <&usb_1_ssphy>;
+		phy-names = "usb2-phy", "usb3-phy";
+
+		/*
+		 * 最大速度
+		 */
+		maximum-speed = "super-speed";
+	};
 };
 
+/*
+ * IOMMU 配置
+ * SMMU (System MMU) 用于 ADSP 访问 USB 内存
+ */
 &apps_smmu {
-    usb_audio_cb: usb-audio-cb@180f {
-        compatible = "qcom,smmu-cb";
-        iommus = <&apps_smmu 0x180f 0x0>;
-        qcom,iommu-dma = "bypass";
-    };
+	/*
+	 * USB 音频 Context Bank
+	 * Stream ID 0x180f 专用于 USB 音频 offload
+	 */
+	qcom,usb-audio-cb {
+		compatible = "qcom,smmu-cb";
+		iommus = <&apps_smmu 0x180f 0x0>;
+
+		/*
+		 * DMA 模式
+		 * bypass: 直通模式（调试用）
+		 * fastmap: 快速映射模式（生产环境）
+		 * atomic: 原子映射模式
+		 */
+		qcom,iommu-dma = "fastmap";
+		qcom,iommu-dma-addr-pool = <0x10000000 0x40000000>;
+
+		/*
+		 * 页表配置
+		 */
+		qcom,iommu-faults = "non-fatal";
+		qcom,iommu-vmid = <0x3>;  /* VMID for ADSP */
+	};
 };
+
+/*
+ * ASoC Machine Driver 配置（可选）
+ * 如果需要自定义 machine driver
+ */
+/ {
+	sound: sound {
+		compatible = "qcom,qcs6490-sndcard";
+		model = "qcs6490-radxa-q6a-snd-card";
+
+		/*
+		 * Audio routing
+		 * 定义音频路径
+		 */
+		audio-routing =
+			"USB Playback", "MultiMedia1 Playback",
+			"MultiMedia2 Capture", "USB Capture";
+
+		/*
+		 * DAI links
+		 */
+		mm1-dai-link {
+			link-name = "MultiMedia1";
+			cpu {
+				sound-dai = <&q6apm 1>;
+			};
+			platform {
+				sound-dai = <&q6apm>;
+			};
+			codec {
+				sound-dai = <&q6usb 0>;
+			};
+		};
+
+		mm2-dai-link {
+			link-name = "MultiMedia2";
+			cpu {
+				sound-dai = <&q6apm 2>;
+			};
+			platform {
+				sound-dai = <&q6apm>;
+			};
+			codec {
+				sound-dai = <&q6usb 1>;
+			};
+		};
+	};
+};
+
+/*
+ * 重要说明：
+ *
+ * 1. 地址和中断号
+ *    - 本文件中的地址、中断号、时钟名称等需要根据实际硬件调整
+ *    - 参考 Qualcomm 官方设备树或板级 DTS
+ *    - 参考 arch/arm64/boot/dts/qcom/qcs6490.dtsi
+ *
+ * 2. GPR 服务 ID
+ *    - GPR_APM_MODULE_IID: 通常为 1
+ *    - GPR_PRM_MODULE_IID: 通常为 2
+ *    - GPR_AFE_MODULE_IID: 通常为 3
+ *    - 参考 include/dt-bindings/sound/qcom,gpr.h
+ *
+ * 3. IOMMU Stream ID
+ *    - 0x180f 是示例值，实际值需要根据硬件配置
+ *    - 必须在 SMMU 中正确配置
+ *    - 必须与 ADSP 固件中的配置匹配
+ *
+ * 4. 内存区域
+ *    - adsp_mem 的地址和大小需要根据实际内存布局调整
+ *    - 不能与其他保留内存区域冲突
+ *    - 参考 Qualcomm 官方内存映射文档
+ *
+ * 5. 固件文件
+ *    - 确保 /lib/firmware/qcom/qcs6490/adsp.mbn 存在
+ *    - 固件必须支持 USB offload 功能
+ *    - 固件版本需要与内核驱动匹配
+ *
+ * 6. 调试方法
+ *    # 检查设备树节点
+ *    ls /sys/firmware/devicetree/base/soc/remoteproc*/
+ *    ls /sys/firmware/devicetree/base/soc/usb*/
+ *
+ *    # 检查 ADSP 状态
+ *    cat /sys/class/remoteproc/remoteproc*/state
+ *    cat /sys/class/remoteproc/remoteproc*/firmware
+ *
+ *    # 检查 IOMMU 映射
+ *    cat /sys/kernel/debug/iommu/*/mappings
+ *
+ *    # 检查 USB 设备
+ *    lsusb -t
+ *    cat /sys/kernel/debug/usb/devices
+ *
+ * 7. 已知限制
+ *    - 某些属性（如 usb-xhci-sideband）可能在旧内核中不存在
+ *    - IOMMU 配置可能因 SoC 版本而异
+ *    - 需要 ADSP 固件支持 USB offload
+ *
+ * 8. 参考资料
+ *    - Documentation/devicetree/bindings/sound/qcom,q6usb.yaml
+ *    - Documentation/devicetree/bindings/usb/qcom,dwc3.yaml
+ *    - Documentation/devicetree/bindings/remoteproc/qcom,adsp.yaml
+ *    - arch/arm64/boot/dts/qcom/qcs6490.dtsi
+ */
