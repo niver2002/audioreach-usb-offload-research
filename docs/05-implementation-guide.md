@@ -1,5 +1,10 @@
 # AudioReach USB Audio Offload 实现指南
 
+> **⚠️ 重要声明**
+> 本文档中关于 USB Audio Offload 的内容存在技术错误。QCS6490 在 Linux 主线内核中使用 q6apm 架构，
+> 该架构不支持 USB offload。详见 [AUDIOREACH_USB_OFFLOAD_FINDINGS.md](../AUDIOREACH_USB_OFFLOAD_FINDINGS.md)。
+
+
 ## 概述
 
 本文档基于上游 Linux 内核真实源码，提供 AudioReach USB Audio Offload 的实现指南。需要特别注意的是，上游实现与早期文档描述存在重大差异，本指南将基于真实的驱动架构和数据路径进行说明。

@@ -1,5 +1,10 @@
 # USB Audio Offload 技术文档
 
+> **⚠️ 重要声明**
+> 本文档中关于 USB Audio Offload 的内容存在技术错误。QCS6490 在 Linux 主线内核中使用 q6apm 架构，
+> 该架构不支持 USB offload。详见 [AUDIOREACH_USB_OFFLOAD_FINDINGS.md](../AUDIOREACH_USB_OFFLOAD_FINDINGS.md)。
+
+
 ## 概述
 
 USB Audio Offload 是一种将 USB 音频数据处理从应用处理器（AP）卸载到音频数字信号处理器（ADSP）的技术。该技术通过让 ADSP 直接处理 USB 音频数据流，显著降低了 AP 的功耗和处理负担。
