@@ -1,0 +1,112 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: User <user@localhost>
+Date: Tue, 25 Feb 2026 00:00:00 +0800
+Subject: [PATCH] ASoC: qdsp6: audioreach: configure MFC FIR resampler for
+ maximum quality
+
+The upstream audioreach driver only sends PARAM_ID_MFC_OUTPUT_MEDIA_FORMAT
+to set the MFC module's output sample rate / bit depth / channels, but
+never sends PARAM_ID_MFC_RESAMPLER_CFG (0x0800104D). This leaves the
+ADSP using the default low-latency FIR filter, which has shorter taps
+and inferior stopband rejection.
+
+Add audioreach_mfc_set_resampler_cfg() which sends
+PARAM_ID_MFC_RESAMPLER_CFG before the output media format, configuring:
+
+  resampler_type = 0  (FIR)
+  use_hw_rs      = 0  (software, not HW resampler)
+  dynamic_mode   = 1  (dynamic resampling for USB clock drift compensation)
+  delay_type     = 1  (high latency = longest FIR = best quality)
+
+This enables HiFi-grade sample rate conversion with USB audio clock
+drift compensation on QCS6490 and similar AudioReach platforms.
+
+Signed-off-by: User <user@localhost>
+---
+ sound/soc/qcom/qdsp6/audioreach.c | 49 ++++++++++++++++++++++++++++++
+ sound/soc/qcom/qdsp6/audioreach.h |  1 +
+ 2 files changed, 50 insertions(+)
+
+diff --git a/sound/soc/qcom/qdsp6/audioreach.h b/sound/soc/qcom/qdsp6/audioreach.h
+index 1234567..abcdefg 100644
+--- a/sound/soc/qcom/qdsp6/audioreach.h
++++ b/sound/soc/qcom/qdsp6/audioreach.h
+@@ -611,6 +611,7 @@
+
+ #define PARAM_ID_MFC_OUTPUT_MEDIA_FORMAT	0x08001024
+ #define PARAM_ID_EARLY_EOS_DELAY		0x0800114C
++#define PARAM_ID_MFC_RESAMPLER_CFG		0x0800104D
+ #define EARLY_EOS_DELAY_MS			150
+
+ struct param_id_mfc_media_format {
+diff --git a/sound/soc/qcom/qdsp6/audioreach.c b/sound/soc/qcom/qdsp6/audioreach.c
+index 1234567..abcdefg 100644
+--- a/sound/soc/qcom/qdsp6/audioreach.c
++++ b/sound/soc/qcom/qdsp6/audioreach.c
+@@ -832,6 +832,51 @@
+ 	return q6apm_send_cmd_sync(graph->apm, pkt, 0);
+ }
+
++/*
++ * PARAM_ID_MFC_RESAMPLER_CFG payload — matches SPF API definition.
++ * Reference: audioreach-engine modules/cmn/pcm_mf_cnv/capi/mfc/api/mfc_api.h
++ */
++struct param_id_mfc_resampler_cfg {
++	uint32_t resampler_type;
++	/* 0 = FIR (default), 1 = IIR, 2 = IIR preferred */
++	uint32_t use_hw_rs;
++	/* 0 = software resampler, 1 = hardware resampler */
++	uint16_t dynamic_mode;
++	/* 0 = generic resampling, 1 = dynamic resampling */
++	uint16_t delay_type;
++	/* 0 = low latency (shorter filter), 1 = high latency (longer filter, best quality) */
++} __packed;
++
++static int audioreach_mfc_set_resampler_cfg(struct q6apm_graph *graph,
++					    const struct audioreach_module *module)
++{
++	struct apm_module_param_data *param_data;
++	struct param_id_mfc_resampler_cfg *rs_cfg;
++	int payload_size = sizeof(*rs_cfg) + APM_MODULE_PARAM_DATA_SIZE;
++	void *p;
++
++	struct gpr_pkt *pkt __free(kfree) =
++		audioreach_alloc_apm_cmd_pkt(payload_size, APM_CMD_SET_CFG, 0);
++	if (IS_ERR(pkt))
++		return PTR_ERR(pkt);
++
++	p = (void *)pkt + GPR_HDR_SIZE + APM_CMD_HDR_SIZE;
++
++	param_data = p;
++	param_data->module_instance_id = module->instance_id;
++	param_data->error_code = 0;
++	param_data->param_id = PARAM_ID_MFC_RESAMPLER_CFG;
++	param_data->param_size = sizeof(*rs_cfg);
++
++	p = p + APM_MODULE_PARAM_DATA_SIZE;
++	rs_cfg = p;
++
++	rs_cfg->resampler_type = 0;  /* FIR resampler */
++	rs_cfg->use_hw_rs      = 0;  /* software resampler */
++	rs_cfg->dynamic_mode   = 1;  /* dynamic: USB clock drift compensation */
++	rs_cfg->delay_type     = 1;  /* HIGH latency = longest FIR = best quality */
++
++	return q6apm_send_cmd_sync(graph->apm, pkt, 0);
++}
++
+ static int audioreach_mfc_set_media_format(struct q6apm_graph *graph,
+ 					   const struct audioreach_module *module,
+ 					   const struct audioreach_module_config *cfg)
+@@ -841,6 +886,10 @@
+ 	int i;
+ 	void *p;
+
++	int rc = audioreach_mfc_set_resampler_cfg(graph, module);
++	if (rc)
++		return rc;
++
+ 	struct gpr_pkt *pkt __free(kfree) = audioreach_alloc_apm_cmd_pkt(payload_size, APM_CMD_SET_CFG, 0);
+ 	if (IS_ERR(pkt))
+ 		return PTR_ERR(pkt);
+--
+2.43.0

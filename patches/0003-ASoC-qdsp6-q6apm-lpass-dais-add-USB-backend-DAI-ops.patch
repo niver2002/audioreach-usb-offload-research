@@ -1,0 +1,82 @@
+From: USB Audio Offload Research <research@audioreach-usb-offload>
+Date: Tue, 25 Feb 2026 00:00:00 +0000
+Subject: [PATCH 3/6] ASoC: qdsp6: q6apm-lpass-dais: add USB backend DAI ops
+ for AudioReach
+
+The upstream q6dsp-lpass-ports.c already defines a USB_RX (id=136) DAI
+entry in q6dsp_audio_fe_dais[] and routes it to cfg->q6usb_ops in
+q6dsp_audio_ports_set_config(). However, q6apm-lpass-dais.c never sets
+cfg.q6usb_ops, so the USB DAI has no ops and cannot function under the
+AudioReach/GPR stack.
+
+Add q6usb_hw_params() to configure sample rate, bit width, and channels
+for the USB audio module, and wire it into the DAI ops. The prepare,
+startup, and shutdown paths reuse the existing q6apm_lpass_dai_prepare/
+startup/shutdown which are generic enough for all backend DAIs.
+
+This is the key missing piece that prevents USB audio offload from
+working on AudioReach-based platforms like QCS6490 (Radxa Q6A). The
+ADSP firmware already contains the USB audio modules (MODULE_ID_USB_
+AUDIO_SINK = 0x0700104F), and the QMI data path (qc_audio_offload.c)
+is independent of APR/GPR. Only the graph configuration path through
+q6apm was missing.
+
+Signed-off-by: USB Audio Offload Research <research@audioreach-usb-offload>
+---
+ sound/soc/qcom/qdsp6/q6apm-lpass-dais.c | 30 ++++++++++++++++++++++++
+ 1 file changed, 30 insertions(+)
+
+diff --git a/sound/soc/qcom/qdsp6/q6apm-lpass-dais.c b/sound/soc/qcom/qdsp6/q6apm-lpass-dais.c
+index XXXXXXX..XXXXXXX 100644
+--- a/sound/soc/qcom/qdsp6/q6apm-lpass-dais.c
++++ b/sound/soc/qcom/qdsp6/q6apm-lpass-dais.c
+@@ -4,6 +4,7 @@
+ #include <dt-bindings/sound/qcom,q6dsp-lpass-ports.h>
+ #include <linux/err.h>
+ #include <linux/init.h>
++#include <linux/jiffies.h>
+ #include <linux/module.h>
+ #include <linux/device.h>
+ #include <linux/platform_device.h>
+@@ -XXX,6 +XXX,28 @@ static int q6dma_hw_params(...)
+ 	return 0;
+ }
+
++static int q6usb_hw_params(struct snd_pcm_substream *substream,
++			   struct snd_pcm_hw_params *params,
++			   struct snd_soc_dai *dai)
++{
++	struct q6apm_lpass_dai_data *dai_data = dev_get_drvdata(dai->dev);
++	struct audioreach_module_config *cfg = &dai_data->module_config[dai->id];
++	int channels = hw_param_interval_c(params,
++					   SNDRV_PCM_HW_PARAM_CHANNELS)->max;
++
++	cfg->bit_width = params_width(params);
++	cfg->sample_rate = params_rate(params);
++	cfg->num_channels = channels;
++	audioreach_set_default_channel_mapping(cfg->channel_map, channels);
++
++	return 0;
++}
++
++static const struct snd_soc_dai_ops q6usb_ops = {
++	.prepare	= q6apm_lpass_dai_prepare,
++	.startup	= q6apm_lpass_dai_startup,
++	.shutdown	= q6apm_lpass_dai_shutdown,
++	.hw_params	= q6usb_hw_params,
++};
++
+ static void q6apm_lpass_dai_shutdown(...)
+ {
+ ...
+@@ -XXX,6 +XXX,7 @@ static int q6apm_lpass_dai_dev_probe(struct platform_device *pdev)
+ 	cfg.q6i2s_ops = &q6i2s_ops;
+ 	cfg.q6dma_ops = &q6dma_ops;
+ 	cfg.q6hdmi_ops = &q6hdmi_ops;
++	cfg.q6usb_ops = &q6usb_ops;
+ 	dais = q6dsp_audio_ports_set_config(dev, &cfg, &num_dais);
+
+ 	return devm_snd_soc_register_component(dev,
+
+--
+2.43.0
