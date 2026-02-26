@@ -18,6 +18,12 @@
 | `q6afe-dai.c` | `sound/soc/qcom/qdsp6/` | AFE DAI 定义 |
 | `q6afe.c` | `sound/soc/qcom/qdsp6/` | AFE 底层实现 |
 
+## 研究进展（按日期）
+
+- [DEEP_RESEARCH_2026-02-26.md](DEEP_RESEARCH_2026-02-26.md) - 2026-02-26 增量核验：相对 2026-02-25 无新的上游解锁点，`q6usb -> q6afe` 耦合仍在。
+- [DEEP_RESEARCH_2026-02-25.md](DEEP_RESEARCH_2026-02-25.md) - 2026-02-25 深度验证 v2：固件反编译确认 GPR 固件内置 USB offload，瓶颈在内核桥接。
+- [analysis/06-q6usb-decoupling-dependency-map.md](analysis/06-q6usb-decoupling-dependency-map.md) - 2026-02-26 新增：`q6usb` 解耦依赖图与最小改动切分。
+
 ## 核心发现
 
 USB Audio Offload **不走**传统的 AFE 数据路径。真实架构：
