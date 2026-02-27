@@ -809,6 +809,10 @@ static int audioreach_widget_load_buffer(struct snd_soc_component *component,
 	case MODULE_ID_DISPLAY_PORT_SINK:
 		audioreach_widget_dp_module_load(mod, mod_array);
 		break;
+	case MODULE_ID_USB_AUDIO_SINK:
+	case MODULE_ID_USB_AUDIO_SOURCE:
+		audioreach_widget_dp_module_load(mod, mod_array);
+		break;
 	default:
 		return -EINVAL;
 	}

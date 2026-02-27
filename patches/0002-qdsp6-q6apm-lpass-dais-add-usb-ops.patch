@@ -1,0 +1,60 @@
+diff --git a/sound/soc/qcom/qdsp6/q6apm-lpass-dais.c b/sound/soc/qcom/qdsp6/q6apm-lpass-dais.c
+index 528756f..c99d047 100644
+--- a/sound/soc/qcom/qdsp6/q6apm-lpass-dais.c
++++ b/sound/soc/qcom/qdsp6/q6apm-lpass-dais.c
+@@ -141,6 +141,33 @@ static int q6dma_hw_params(struct snd_pcm_substream *substream,
+ 	return 0;
+ }
+ 
++static int q6usb_hw_params(struct snd_pcm_substream *substream,
++			   struct snd_pcm_hw_params *params,
++			   struct snd_soc_dai *dai)
++{
++	struct q6apm_lpass_dai_data *dai_data = dev_get_drvdata(dai->dev);
++	struct snd_soc_pcm_runtime *rtd = substream->private_data;
++	struct audioreach_module_config *cfg = &dai_data->module_config[dai->id];
++	int channels = hw_param_interval_c(params, SNDRV_PCM_HW_PARAM_CHANNELS)->max;
++
++	cfg->bit_width = params_width(params);
++	cfg->sample_rate = params_rate(params);
++	cfg->num_channels = channels;
++	audioreach_set_default_channel_mapping(cfg->channel_map, channels);
++
++	/* USB token format: [31:16]=card_idx [15:8]=pcm_idx [7:0]=direction */
++	if (rtd && rtd->card && rtd->card->snd_card && substream->pcm)
++		cfg->usb_token = (rtd->card->snd_card->number << 16) |
++				 (substream->pcm->device << 8);
++	else
++		cfg->usb_token = 0;
++
++	/* Optional USB service interval override; keep firmware default by default. */
++	cfg->usb_svc_interval = 0;
++
++	return 0;
++}
++
+ static void q6apm_lpass_dai_shutdown(struct snd_pcm_substream *substream, struct snd_soc_dai *dai)
+ {
+ 	struct q6apm_lpass_dai_data *dai_data = dev_get_drvdata(dai->dev);
+@@ -273,6 +300,13 @@ static const struct snd_soc_dai_ops q6hdmi_ops = {
+ 	.set_fmt	= q6i2s_set_fmt,
+ };
+ 
++static const struct snd_soc_dai_ops q6usb_ops = {
++	.prepare	= q6apm_lpass_dai_prepare,
++	.startup	= q6apm_lpass_dai_startup,
++	.shutdown	= q6apm_lpass_dai_shutdown,
++	.hw_params	= q6usb_hw_params,
++};
++
+ static const struct snd_soc_component_driver q6apm_lpass_dai_component = {
+ 	.name = "q6apm-be-dai-component",
+ 	.of_xlate_dai_name = q6dsp_audio_ports_of_xlate_dai_name,
+@@ -298,6 +332,7 @@ static int q6apm_lpass_dai_dev_probe(struct platform_device *pdev)
+ 	cfg.q6i2s_ops = &q6i2s_ops;
+ 	cfg.q6dma_ops = &q6dma_ops;
+ 	cfg.q6hdmi_ops = &q6hdmi_ops;
++	cfg.q6usb_ops = &q6usb_ops;
+ 	dais = q6dsp_audio_ports_set_config(dev, &cfg, &num_dais);
+ 
+ 	return devm_snd_soc_register_component(dev, &q6apm_lpass_dai_component, dais, num_dais);

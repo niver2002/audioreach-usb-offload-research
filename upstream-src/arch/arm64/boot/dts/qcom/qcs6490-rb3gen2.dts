@@ -1094,6 +1094,16 @@
 	status = "okay";
 };
 
+&q6apm {
+	q6usb: q6usb@0 {
+		compatible = "qcom,q6usb";
+		reg = <0>;
+		qcom,usb-audio-intr-idx = /bits/ 16 <2>;
+		iommus = <&apps_smmu 0x180f 0x0>;
+		#sound-dai-cells = <1>;
+	};
+};
+
 &sdhc_2 {
 	pinctrl-0 = <&sdc2_clk>, <&sdc2_cmd>, <&sdc2_data>, <&sd_cd>;
 	pinctrl-1 = <&sdc2_clk_sleep>, <&sdc2_cmd_sleep>, <&sdc2_data_sleep>, <&sd_cd>;
@@ -1143,6 +1153,22 @@
 
 		cpu {
 			sound-dai = <&q6apmbedai VA_CODEC_DMA_TX_0>;
+		};
+
+		platform {
+			sound-dai = <&q6apm>;
+		};
+	};
+
+	usb-dai-link {
+		link-name = "USB Playback";
+
+		codec {
+			sound-dai = <&q6usb USB_RX>;
+		};
+
+		cpu {
+			sound-dai = <&q6apmbedai USB_RX>;
 		};
 
 		platform {
